@@ -1,4 +1,5 @@
 from typing import Dict, Iterable, Tuple, Union
+from pathlib import Path
 import abc
 from io import BytesIO
 
@@ -46,7 +47,7 @@ class StorageInterface(abc.ABC):
     """
 
     @abc.abstractmethod
-    def get_file(self, file_to_be_downloaded: str, destination) -> None:
+    def get_file(self, file_to_be_downloaded: Union[str, Path], destination) -> None:
         """
         Download the given file key in the destination on the host
         """

@@ -2,6 +2,7 @@ import logging
 import os
 from typing import Generator, Union
 from io import BytesIO
+from pathlib import Path
 
 import boto3
 
@@ -68,9 +69,9 @@ class DigitalOceanSpaces(StorageInterface):
             aws_secret_access_key=self._access_secret,
         )
 
-    def get_file(self, file_key: str, destination) -> None:
-        logging.debug(f"Getting {file_key}")
-        self._client.download_fileobj(self._bucket, file_key, destination)
+    def get_file(self, file_to_be_downloaded: Union[str, Path], destination) -> None:
+        logging.debug(f"Getting {file_to_be_downloaded}")
+        self._client.download_fileobj(self._bucket, str(file_to_be_downloaded), destination)
 
     def upload_content(
         self,

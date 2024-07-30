@@ -4,40 +4,25 @@ from datetime import datetime
 from io import BytesIO
 from xml.dom import minidom
 from zipfile import ZipFile, ZIP_DEFLATED
+from pathlib import Path
 
 from .utils import hash_content
-
+from .interfaces import StorageInterface
 
 need_update_zip_state = False
 
-
-def create_aggregates_table(database):
-    database._commit_changes(
-        """
-        CREATE TABLE IF NOT EXISTS aggregates (
-            id SERIAL PRIMARY KEY ,
-            territory_id VARCHAR,
-            state_code VARCHAR NOT NULL,
-            url_zip VARCHAR(255),
-            year INTEGER,
-            last_updated TIMESTAMP,
-            hash_info VARCHAR(64),
-            file_size REAL
-        ); """)
-
-
-def xml_content_generate(gazzetes_query_content:list, root, territory_id, storage):
+def xml_content_generate(gazzetes_query_content:list, root, territory_id : str, storage : StorageInterface):
     all_gazettes_tag = ET.SubElement(root, "diarios")
 
     for gazette in gazzetes_query_content:
         try:
             file_gazette_txt = BytesIO()
-            path_arq_bucket = str(gazette[7])
+            path_arq_bucket = Path(gazette[7])
 
-            if path_arq_bucket.endswith(".pdf"):
-                path_arq_bucket = path_arq_bucket.replace(".pdf", ".txt")
+            if path_arq_bucket.suffix == ".pdf":
+                path_arq_bucket = path_arq_bucket.with_suffix(".txt")
             else:
-                path_arq_bucket = path_arq_bucket + ".txt"
+                path_arq_bucket = path_arq_bucket.with_suffix(path_arq_bucket.suffix + ".txt")
             
             storage.get_file(path_arq_bucket, file_gazette_txt)
 
@@ -82,25 +67,25 @@ def create_zip_for_state(xml_arr:list, year, state_code, database, storage):
     dict_query_info = {
         "state_code" : state_code,
         "territory_id" : None,
-        "url_zip": zip_path,
+        "file_path": zip_path,
         "year": year,
         "hash_info": hx,
-        "file_size": zip_size,
+        "file_size_mb": zip_size,
     }
 
     query_existing_aggregate = list(database.select(f"SELECT hash_info FROM aggregates \
-                                                            WHERE url_zip='{zip_path}';"))
+                                                            WHERE file_path='{zip_path}';"))
 
     if query_existing_aggregate and hx != query_existing_aggregate[0][0]:
         database.insert("UPDATE aggregates SET \
             state_code=%(state_code)s, last_updated=NOW(), \
-            hash_info=%(hash_info)s, file_size=%(file_size)s \
-            WHERE url_zip=%(url_zip)s;", dict_query_info)
+            hash_info=%(hash_info)s, file_size_mb=%(file_size_mb)s \
+            WHERE file_path=%(file_path)s;", dict_query_info)
     else:
         database.insert("INSERT INTO aggregates \
-                (territory_id, state_code, url_zip, year, last_updated, hash_info, file_size)\
-                VALUES (%(territory_id)s, %(state_code)s, %(url_zip)s, %(year)s, NOW(), \
-                %(hash_info)s, %(file_size)s);", dict_query_info)
+                (territory_id, state_code, year, file_path, file_size_mb, hash_info, last_updated) \
+                VALUES (%(territory_id)s, %(state_code)s, %(year)s, %(file_path)s, %(file_size_mb)s, \
+                %(hash_info)s, NOW());", dict_query_info)
 
     zip_buffer.close()
 
@@ -119,7 +104,7 @@ def create_zip_for_territory(xml_arr:list, database, storage):
             zip_path = f"aggregates/{xml_file['state_code']}/{xml_file['territory_id']}-{xml_file['year']}.zip"
             
             query_existing_aggregate = list(database.select(f"SELECT hash_info FROM aggregates \
-                                                            WHERE url_zip='{zip_path}';"))
+                                                WHERE file_path='{zip_path}';"))
             
             need_update = False
 
@@ -143,22 +128,22 @@ def create_zip_for_territory(xml_arr:list, database, storage):
             dict_query_info = {
                 "state_code" : xml_file['state_code'],
                 "territory_id" : xml_file['territory_id'],
-                "url_zip": zip_path,
+                "file_path": zip_path,
                 "year": xml_file['year'],
                 "hash_info": hx,
-                "file_size": zip_size,
+                "file_size_mb": zip_size,
             }
 
             if need_update:
                 database.insert("UPDATE aggregates SET \
-                    territory_id=%(territory_id)s, state_code=%(state_code)s, last_updated=NOW(), \
-                    hash_info=%(hash_info)s, file_size=%(file_size)s \
-                    WHERE url_zip=%(url_zip)s;", dict_query_info)
+                    state_code=%(state_code)s, last_updated=NOW(), \
+                    hash_info=%(hash_info)s, file_size_mb=%(file_size_mb)s \
+                    WHERE file_path=%(file_path)s;", dict_query_info)
             else:
                 database.insert("INSERT INTO aggregates \
-                    (territory_id, state_code, url_zip, year, last_updated, hash_info, file_size)\
-                    VALUES (%(territory_id)s, %(state_code)s, %(url_zip)s, %(year)s, NOW(), \
-                    %(hash_info)s, %(file_size)s);", dict_query_info)
+                    (territory_id, state_code, year, file_path, file_size_mb, hash_info, last_updated) \
+                    VALUES (%(territory_id)s, %(state_code)s, %(year)s, %(file_path)s, %(file_size_mb)s, \
+                    %(hash_info)s, NOW());", dict_query_info)
 
             zip_buffer.close()
         except Exception as e:
@@ -233,8 +218,6 @@ def create_aggregates(database, storage):
     for res in results_query_states:
         
         results_query_territories = database.select(f"SELECT * FROM territories WHERE state_code='{res[0]}';")
-
-        create_aggregates_table(database)
 
         try:
             create_aggregates_for_territories_and_states(list(results_query_territories), res[0], database, storage)
