@@ -1,5 +1,6 @@
-from typing import Dict, Iterable, Tuple
+from typing import Dict, Iterable, Tuple, Union
 import abc
+from io import BytesIO
 
 
 class DatabaseInterface(abc.ABC):
@@ -51,7 +52,7 @@ class StorageInterface(abc.ABC):
         """
 
     @abc.abstractmethod
-    def upload_content(self, file_key: str, content_to_be_uploaded: str) -> None:
+    def upload_content(self, file_key: str, content_to_be_uploaded: Union[str, BytesIO]) -> None:
         """
         Upload the given content to the destination on the host
         """
@@ -65,7 +66,7 @@ class StorageInterface(abc.ABC):
     @abc.abstractmethod
     def delete_file(self, file_key: str) -> None:
         """
-        Delete a file in the bucket S3.
+        Delete a file on the host.
         """
 
 

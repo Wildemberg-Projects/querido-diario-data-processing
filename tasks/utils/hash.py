@@ -1,32 +1,18 @@
 import hashlib, os
+from typing import Union
 
-def hash_xml(content : str):
+
+def hash_content(content: Union[str, bytes]) -> str:
     """
-    Receives a text content of a XML file and returns its SHA-256 hash
+    Receives a content of string or byte format and returns its SHA-256 hash
     """
 
-    seed_hash = bytes(os.environ['SEED_HASH'].encode('utf-8'))
-
-    # Escolha o algoritmo de hash (no caso, SHA-256)
-    algorithm = hashlib.sha256
-    result_hash = hashlib.pbkdf2_hmac(algorithm().name, content.encode('utf-8'), seed_hash, 100000)
+    # Verifica se o conteúdo está em bytes ou str
+    conteudo_hash = content.encode('utf-8') if isinstance(content, str) else content
 
     # Converta o resultado para uma representação legível (hexadecimal)
-    hash_hex = result_hash.hex()
+    result_hash = hashlib.sha256(conteudo_hash).hexdigest()
 
-    return hash_hex
+    print(result_hash)
 
-def hash_zip(zip_content: bytes) -> str:
-    """
-    Receives the content of a zip file and returns its SHA-256 hash.
-    """
-    seed_hash = bytes(os.environ.get('SEED_HASH', 'default_seed').encode('utf-8'))
-
-    # Escolha o algoritmo de hash (no caso, SHA-256)
-    algorithm = hashlib.sha256
-    result_hash = hashlib.pbkdf2_hmac(algorithm().name, zip_content, seed_hash, 100000)
-
-    # Converta o resultado para uma representação legível (hexadecimal)
-    hash_hex = result_hash.hex()
-
-    return hash_hex
+    return result_hash

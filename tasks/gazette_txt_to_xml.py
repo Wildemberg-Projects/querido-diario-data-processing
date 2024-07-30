@@ -5,7 +5,7 @@ from io import BytesIO
 from xml.dom import minidom
 from zipfile import ZipFile, ZIP_DEFLATED
 
-from .utils import hash_xml, hash_zip
+from .utils import hash_content
 
 
 need_update_zip_state = False
@@ -75,9 +75,9 @@ def create_zip_for_state(xml_arr:list, year, state_code, database, storage):
     zip_buffer.seek(0)
     zip_buffer_copy = BytesIO(zip_buffer.getvalue())
     zip_buffer_copy.seek(0)
-    storage.upload_zip(zip_path, zip_buffer)
+    storage.upload_content(zip_path, zip_buffer)
 
-    hx = hash_zip(zip_buffer_copy.read())
+    hx = hash_content(zip_buffer_copy.read())
 
     dict_query_info = {
         "state_code" : state_code,
@@ -115,7 +115,7 @@ def create_zip_for_territory(xml_arr:list, database, storage):
 
     for xml_file in xml_arr:
         try:
-            hx = hash_xml(xml_file['xml'].getvalue().decode('utf-8'))
+            hx = hash_content(xml_file['xml'].getvalue().decode('utf-8'))
             zip_path = f"aggregates/{xml_file['state_code']}/{xml_file['territory_id']}-{xml_file['year']}.zip"
             
             query_existing_aggregate = list(database.select(f"SELECT hash_info FROM aggregates \
@@ -138,7 +138,7 @@ def create_zip_for_territory(xml_arr:list, database, storage):
             zip_size = round(zip_buffer.tell() / (1024 * 1024), 2)
             zip_buffer.seek(0)
 
-            storage.upload_zip(zip_path, zip_buffer)
+            storage.upload_content(zip_path, zip_buffer)
 
             dict_query_info = {
                 "state_code" : xml_file['state_code'],
