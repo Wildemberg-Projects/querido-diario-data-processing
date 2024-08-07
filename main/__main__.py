@@ -9,6 +9,7 @@ from index import create_index_interface
 from tasks import (
     create_aggregates,
     create_gazettes_index,
+    create_aggregates_table,
     create_themed_excerpts_index,
     embedding_rerank_excerpts,
     extract_text_from_gazettes,
@@ -64,6 +65,8 @@ def gazette_texts_pipeline():
 def aggregates_pipeline():
     database = create_database_interface()
     storage = create_storage_interface()
+
+    create_aggregates_table(database)
     create_aggregates(database, storage)
 
 

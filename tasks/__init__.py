@@ -1,4 +1,5 @@
 from .create_index import create_gazettes_index, create_themed_excerpts_index
+from .create_aggregates_table import create_aggregates_table
 from .gazette_excerpts_embedding_reranking import embedding_rerank_excerpts
 from .gazette_excerpts_entities_tagging import tag_entities_in_excerpts
 from .gazette_text_extraction import extract_text_from_gazettes
