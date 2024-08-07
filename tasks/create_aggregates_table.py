@@ -9,7 +9,7 @@ def create_aggregates_table(database: DatabaseInterface):
             territory_id VARCHAR,
             state_code VARCHAR NOT NULL,
             year INTEGER,
-            file_path VARCHAR(255),
+            file_path VARCHAR(255) UNIQUE,
             file_size_mb REAL,
             hash_info VARCHAR(64),
             last_updated TIMESTAMP

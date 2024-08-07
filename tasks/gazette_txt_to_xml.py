@@ -7,12 +7,13 @@ from xml.dom import minidom
 from zipfile import ZipFile, ZIP_DEFLATED
 from pathlib import Path
 
-from .utils import hash_content
+from .utils import hash_content, zip_needs_upsert, get_territory_slug
 from .interfaces import StorageInterface,DatabaseInterface
+
+from botocore.exceptions import ClientError
 
 need_update_zip_state = False
 logger = logging.getLogger(__name__)
-
 
 
 def create_aggregates(database:DatabaseInterface, storage:StorageInterface):
@@ -20,14 +21,16 @@ def create_aggregates(database:DatabaseInterface, storage:StorageInterface):
     Create xml for all territories available in database
     """
     logger.info("Agregando os arquivos TXT para XML de territórios e estados...")
+    
 
     results_query_states = list(database.select(f"SELECT t.state_code AS code, json_agg(json_build_object('id',t.id, 'name',t.name)) FROM territories t GROUP BY code;"))
 
     for state, territories_list in results_query_states:
         try:
             create_aggregates_for_territories_and_states(territories_list, state, database, storage)
-        except:
-            print(traceback.format_exc())
+        except Exception as e:
+            logger.error(f"Erro ao tentar processar municípios de {state}: {e}\n{traceback.format_exc()}")
+            
             continue
         
 
@@ -37,6 +40,7 @@ def create_aggregates_for_territories_and_states(territories_list:list, state:st
     """
     
     xml_files_dict = {}
+    arr_years_update = []
 
     for territory in territories_list:
         query_content_gazzetes_for_territory = list(database.select(f"""SELECT
@@ -53,56 +57,37 @@ def create_aggregates_for_territories_and_states(territories_list:list, state:st
         
 
         for year, list_gazzetes_content in query_content_gazzetes_for_territory:
-            root = ET.Element("root")
-            xml_file = BytesIO()
+            year = str(int(year))
 
-            logger.info(f"Gerando XML para cidade {territory['name']}-{state} no ano {year}")
+            meta_xml = xml_content_generate(state, year, territory, list_gazzetes_content, storage)
 
-            meta_info_tag = ET.SubElement(root, "meta")
-            ET.SubElement(meta_info_tag, "uf").text = state
-            ET.SubElement(meta_info_tag, "ano_publicacao").text = str(year)
-            ET.SubElement(meta_info_tag, "municipio").text = territory['name']
-            ET.SubElement(meta_info_tag, "municipio_codigo_ibge").text = territory['id']
-
-            xml_content_generate(list_gazzetes_content, root, storage)
-
-            # Format XML file
-            xml_str = ET.tostring(root, encoding='unicode')
-            format_xml = minidom.parseString(xml_str).toprettyxml(indent="  ")
-            xml_bytes = format_xml.encode('utf-8')
-
-            xml_file.write(xml_bytes)
-            xml_file.seek(0)
-
-            meta_xml={
-                "xml":xml_file.getvalue(),
-                "territory_id":territory['id'],
-                "state_code":state,
-                "year":year
-            }
-            
             if year not in xml_files_dict:
                 xml_files_dict[year] = []
+
             xml_files_dict[year].append(meta_xml)
-            
-            xml_file.close()
-            
-            create_zip_for_territory(meta_xml, database, storage)
 
-    # if need_update_zip_state:
-    create_zip_for_state(xml_files_dict, state, database, storage)
+            territory_slug = get_territory_slug(territory['name'], state)
+            zip_path = f"aggregates/{meta_xml['state_code']}/{territory_slug}_{meta_xml['territory_id']}_{meta_xml['year']}.zip"
+            hx = hash_content(meta_xml['xml'])
+
+            need_update_territory_zip = zip_needs_upsert(hx, zip_path, database)
+
+            if need_update_territory_zip:
+                if year not in arr_years_update:
+                    arr_years_update.append(year)
+                create_zip_for_territory(hx, zip_path, meta_xml, database, storage)
+
+    if arr_years_update:
+        create_zip_for_state(xml_files_dict, arr_years_update, state, database, storage)
         
         
-        
-
-
-def create_zip_for_state(xmls_years_dict:dict, state_code, database:DatabaseInterface, storage:StorageInterface):
+def create_zip_for_state(xmls_years_dict:dict, arr_years_update:list, state_code, database:DatabaseInterface, storage:StorageInterface):
     """
     Creating .zip files for the state with all its territories
     """
 
-    for year in xmls_years_dict.keys():
-        print(f"Gerando ZIP do estado {state_code} no ano {year}")
+    for year in arr_years_update:
+        logger.info(f"Gerando ZIP do estado {state_code} no ano {year}")
         
         xmls = xmls_years_dict[year]
         
@@ -131,95 +116,91 @@ def create_zip_for_state(xmls_years_dict:dict, state_code, database:DatabaseInte
             "file_size_mb": zip_size,
         }
 
-        query_existing_aggregate = list(database.select(f"SELECT hash_info FROM aggregates \
-                                                                WHERE file_path='{zip_path}';"))
-
-        if query_existing_aggregate and hx != query_existing_aggregate[0][0]:
-            database.insert("UPDATE aggregates SET \
-                state_code=%(state_code)s, last_updated=NOW(), \
-                hash_info=%(hash_info)s, file_size_mb=%(file_size_mb)s \
-                WHERE file_path=%(file_path)s;", dict_query_info)
-        else:
-            database.insert("INSERT INTO aggregates \
-                    (territory_id, state_code, year, file_path, file_size_mb, hash_info, last_updated) \
-                    VALUES (%(territory_id)s, %(state_code)s, %(year)s, %(file_path)s, %(file_size_mb)s, \
-                    %(hash_info)s, NOW());", dict_query_info)
+        database.insert("INSERT INTO aggregates \
+                    (territory_id, state_code, year, file_path, \
+                    file_size_mb, hash_info, last_updated) \
+                    VALUES (%(territory_id)s, %(state_code)s, \
+                    %(year)s, %(file_path)s, %(file_size_mb)s, \
+                    %(hash_info)s, NOW()) \
+                    ON CONFLICT(file_path) \
+                    DO UPDATE \
+                    SET state_code = EXCLUDED.state_code, last_updated=NOW(), \
+                    hash_info=EXCLUDED.hash_info, file_size_mb=EXCLUDED.file_size_mb;", dict_query_info)
 
         zip_buffer.close()
 
 
-def create_zip_for_territory(xml_file:dict, database:DatabaseInterface, storage:StorageInterface):
+def create_zip_for_territory(hx:str, zip_path:str, xml_file:dict, database:DatabaseInterface, storage:StorageInterface):
     """
     Creating .zip files for the year's territories 
     """
 
-    # global need_update_zip_state
-    # need_update_zip_state = False
+    logger.info(f"Gerando ZIP do municipio {xml_file['territory_id']} no ano {xml_file['year']}")
+
+    zip_buffer = BytesIO()
+
+    with ZipFile(zip_buffer, 'w', ZIP_DEFLATED) as zip_file:
+        zip_file.writestr(f"{xml_file['territory_id']}-{xml_file['year']}.xml", xml_file['xml'])
+    
+    zip_size = round(zip_buffer.tell() / (1024 * 1024), 2)
+    zip_buffer.seek(0)
+
     try:
-        hx = hash_content(xml_file['xml'].decode('utf-8'))
-        zip_path = f"aggregates/{xml_file['state_code']}/{xml_file['territory_id']}-{xml_file['year']}.zip"
-        
-        query_existing_aggregate = list(database.select(f"SELECT hash_info FROM aggregates \
-                                            WHERE file_path='{zip_path}';"))
-        
-        need_update = False
-
-        if query_existing_aggregate:
-            need_update = hx != query_existing_aggregate[0][0]
-            if not need_update:
-                return
-
-        zip_buffer = BytesIO()
-
-        with ZipFile(zip_buffer, 'w', ZIP_DEFLATED) as zip_file:
-            zip_file.writestr(f"{xml_file['territory_id']}-{xml_file['year']}.xml", xml_file['xml'])
-        
-        zip_size = round(zip_buffer.tell() / (1024 * 1024), 2)
-        zip_buffer.seek(0)
-
         storage.upload_content(zip_path, zip_buffer)
-
-        dict_query_info = {
-            "state_code" : xml_file['state_code'],
-            "territory_id" : xml_file['territory_id'],
-            "file_path": zip_path,
-            "year": xml_file['year'],
-            "hash_info": hx,
-            "file_size_mb": zip_size,
-        }
-
-        if need_update:
-            database.insert("UPDATE aggregates SET \
-                state_code=%(state_code)s, last_updated=NOW(), \
-                hash_info=%(hash_info)s, file_size_mb=%(file_size_mb)s \
-                WHERE file_path=%(file_path)s;", dict_query_info)
-        else:
-            database.insert("INSERT INTO aggregates \
-                (territory_id, state_code, year, file_path, file_size_mb, hash_info, last_updated) \
-                VALUES (%(territory_id)s, %(state_code)s, %(year)s, %(file_path)s, %(file_size_mb)s, \
-                %(hash_info)s, NOW());", dict_query_info)
-
+    except ClientError as e:
+        logger.error(f"Não foi possível fazer o upload do zip do município {xml_file['territory_id']}:\n{traceback.format_exc()}")
+        
         zip_buffer.close()
-    except Exception as e:
-        print(traceback.format_exc())
+
+    dict_query_info = {
+        "state_code" : xml_file['state_code'],
+        "territory_id" : xml_file['territory_id'],
+        "file_path": zip_path,
+        "year": xml_file['year'],
+        "hash_info": hx,
+        "file_size_mb": zip_size,
+    }
+
+    database.insert("INSERT INTO aggregates \
+                (territory_id, state_code, year, file_path, \
+                file_size_mb, hash_info, last_updated) \
+                VALUES (%(territory_id)s, %(state_code)s, \
+                %(year)s, %(file_path)s, %(file_size_mb)s, \
+                %(hash_info)s, NOW()) \
+                ON CONFLICT(file_path) \
+                DO UPDATE \
+                SET state_code=EXCLUDED.state_code, last_updated=NOW(), \
+                hash_info=EXCLUDED.hash_info, file_size_mb=EXCLUDED.file_size_mb;", dict_query_info)
+
+    zip_buffer.close()
 
 
-def xml_content_generate(list_gazzetes_content:list, root:ET.Element, storage : StorageInterface):
+def xml_content_generate(state:str, year:str, territory:dict, list_gazzetes_content:list, storage:StorageInterface):
+    """
+    Generates xml file with gazzetes content  
+    """
+    
+    root = ET.Element("root")
+    xml_file = BytesIO()
+
+    logger.info(f"Gerando XML para cidade {territory['name']}-{state} no ano {year}")
+    
+
+    meta_info_tag = ET.SubElement(root, "meta")
+    ET.SubElement(meta_info_tag, "uf").text = state
+    ET.SubElement(meta_info_tag, "ano_publicacao").text = str(year)
+    ET.SubElement(meta_info_tag, "municipio").text = territory['name']
+    ET.SubElement(meta_info_tag, "municipio_codigo_ibge").text = territory['id']
     all_gazettes_tag = ET.SubElement(root, "diarios")
 
     for gazette in list_gazzetes_content:
         file_gazette_txt = BytesIO()
-        path_arq_bucket = Path(gazette['file_path'])
-
-        if path_arq_bucket.suffix == ".pdf":
-            path_arq_bucket = path_arq_bucket.with_suffix(".txt")
-        else:
-            path_arq_bucket = path_arq_bucket.with_suffix(path_arq_bucket.suffix + ".txt")
+        path_arq_bucket = Path(gazette['file_path']).with_suffix(".txt")
         
         try:
             storage.get_file(path_arq_bucket, file_gazette_txt)
-        except Exception as e:
-            print(f"Erro na obtenção do conteúdo de texto do diário do territorio {gazette['territory_id']}: {e}")
+        except ClientError as e:
+            logger.error(f"Erro na obtenção do conteúdo de texto do diário do territorio {gazette['territory_id']}: {e}")
             file_gazette_txt.close()
 
             continue
@@ -234,3 +215,22 @@ def xml_content_generate(list_gazzetes_content:list, root:ET.Element, storage : 
         ET.SubElement(gazette_tag, "conteudo").text = file_gazette_txt.getvalue().decode('utf-8')
 
         file_gazette_txt.close()
+    
+    # Format XML file
+    xml_str = ET.tostring(root, encoding='unicode')
+    format_xml = minidom.parseString(xml_str).toprettyxml(indent="  ")
+    xml_bytes = format_xml.encode('utf-8')
+
+    xml_file.write(xml_bytes)
+    xml_file.seek(0)
+
+    data = {
+        "xml":xml_file.getvalue(),
+        "territory_id":territory['id'],
+        "state_code":state,
+        "year":year
+    }
+
+    xml_file.close()
+
+    return data

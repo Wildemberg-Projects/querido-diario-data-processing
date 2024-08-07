@@ -16,3 +16,6 @@ from .territories import (
 from .hash import (
     hash_content,
 )
+from .need_upsert import (
+    zip_needs_upsert,
+)
