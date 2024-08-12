@@ -1,7 +1,7 @@
 import traceback
 import xml.etree.cElementTree as ET
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from io import BytesIO
 from xml.dom import minidom
 from zipfile import ZipFile, ZIP_DEFLATED
@@ -14,6 +14,7 @@ from botocore.exceptions import ClientError
 
 need_update_zip_state = False
 logger = logging.getLogger(__name__)
+br_timezone = timedelta(hours=-3)
 
 
 def create_aggregates(database:DatabaseInterface, storage:StorageInterface):
@@ -114,6 +115,7 @@ def create_zip_for_state(xmls_years_dict:dict, arr_years_update:list, state_code
             "year": year,
             "hash_info": hx,
             "file_size_mb": zip_size,
+            "last_updated": datetime.utcnow() + br_timezone,
         }
 
         database.insert("INSERT INTO aggregates \
@@ -121,10 +123,10 @@ def create_zip_for_state(xmls_years_dict:dict, arr_years_update:list, state_code
                     file_size_mb, hash_info, last_updated) \
                     VALUES (%(territory_id)s, %(state_code)s, \
                     %(year)s, %(file_path)s, %(file_size_mb)s, \
-                    %(hash_info)s, NOW()) \
+                    %(hash_info)s, %(last_updated)s) \
                     ON CONFLICT(file_path) \
                     DO UPDATE \
-                    SET state_code = EXCLUDED.state_code, last_updated=NOW(), \
+                    SET state_code = EXCLUDED.state_code, last_updated=EXCLUDED.last_updated, \
                     hash_info=EXCLUDED.hash_info, file_size_mb=EXCLUDED.file_size_mb;", dict_query_info)
 
         zip_buffer.close()
@@ -159,6 +161,7 @@ def create_zip_for_territory(hx:str, zip_path:str, xml_file:dict, database:Datab
         "year": xml_file['year'],
         "hash_info": hx,
         "file_size_mb": zip_size,
+        "last_updated": datetime.utcnow() + br_timezone,
     }
 
     database.insert("INSERT INTO aggregates \
@@ -166,10 +169,10 @@ def create_zip_for_territory(hx:str, zip_path:str, xml_file:dict, database:Datab
                 file_size_mb, hash_info, last_updated) \
                 VALUES (%(territory_id)s, %(state_code)s, \
                 %(year)s, %(file_path)s, %(file_size_mb)s, \
-                %(hash_info)s, NOW()) \
+                %(hash_info)s, %(last_updated)s) \
                 ON CONFLICT(file_path) \
                 DO UPDATE \
-                SET state_code=EXCLUDED.state_code, last_updated=NOW(), \
+                SET state_code=EXCLUDED.state_code, last_updated=EXCLUDED.last_updated, \
                 hash_info=EXCLUDED.hash_info, file_size_mb=EXCLUDED.file_size_mb;", dict_query_info)
 
     zip_buffer.close()
