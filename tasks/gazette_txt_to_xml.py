@@ -12,7 +12,6 @@ from .interfaces import StorageInterface,DatabaseInterface
 
 from botocore.exceptions import ClientError
 
-need_update_zip_state = False
 logger = logging.getLogger(__name__)
 br_timezone = timedelta(hours=-3)
 
@@ -22,9 +21,22 @@ def create_aggregates(database:DatabaseInterface, storage:StorageInterface):
     Create xml for all territories available in database
     """
     logger.info("Agregando os arquivos TXT para XML de territórios e estados...")
-    
 
-    results_query_states = list(database.select(f"SELECT t.state_code AS code, json_agg(json_build_object('id',t.id, 'name',t.name)) FROM territories t GROUP BY code;"))
+    results_query_states = list(database.select("""SELECT 
+                                                        t.state_code AS code, 
+                                                        json_agg(json_build_object('id',t.id, 'name',t.name)) 
+                                                    FROM 
+                                                        territories t 
+                                                    WHERE
+                                                        t.id in (SELECT DISTINCT 
+                                                                    territory_id 
+                                                                FROM 
+                                                                    gazettes
+                                                                )
+                                                       GROUP BY 
+                                                        code
+                                                    """
+                                                    ))
 
     for state, territories_list in results_query_states:
         try:
@@ -51,25 +63,24 @@ def create_aggregates_for_territories_and_states(territories_list:list, state:st
                                                                         gazettes g 
                                                                     WHERE
                                                                         g.territory_id='{territory['id']}'
+                                                                        and g.processed=true
                                                                     GROUP BY 
                                                                         year
                                                                     """
-                                                                    )) 
-        
+                                                                    ))
 
         for year, list_gazzetes_content in query_content_gazzetes_for_territory:
             year = str(int(year))
 
             meta_xml = xml_content_generate(state, year, territory, list_gazzetes_content, storage)
 
-            if year not in xml_files_dict:
-                xml_files_dict[year] = []
+            xml_files_dict.setdefault(year, []).append(meta_xml)
 
-            xml_files_dict[year].append(meta_xml)
-
-            territory_slug = get_territory_slug(territory['name'], state)
+            territory_slug = get_territory_slug(meta_xml['territory_name'], state)
             zip_path = f"aggregates/{meta_xml['state_code']}/{territory_slug}_{meta_xml['territory_id']}_{meta_xml['year']}.zip"
             hx = hash_content(meta_xml['xml'])
+
+            logger.debug(f"Content hash for xml file of {zip_path}: {hx}")
 
             need_update_territory_zip = zip_needs_upsert(hx, zip_path, database)
 
@@ -98,7 +109,8 @@ def create_zip_for_state(xmls_years_dict:dict, arr_years_update:list, state_code
 
         with ZipFile(zip_buffer, 'w', ZIP_DEFLATED) as zip_file:
             for xml_file in xmls:
-                zip_file.writestr(f"{xml_file['territory_id']}-{xml_file['year']}.xml", xml_file['xml'])
+                territory_slug = get_territory_slug(xml_file['territory_name'], xml_file['state_code'])
+                zip_file.writestr(f"{territory_slug}_{xml_file['territory_id']}_{xml_file['year']}.xml", xml_file['xml'])
             
         zip_size = round(zip_buffer.getbuffer().nbytes / (1024 * 1024), 2)
         zip_buffer.seek(0)
@@ -107,6 +119,8 @@ def create_zip_for_state(xmls_years_dict:dict, arr_years_update:list, state_code
         storage.upload_content(zip_path, zip_buffer)
 
         hx = hash_content(zip_buffer_copy.read())
+
+        logger.debug(f"Content hash for {zip_path}: {hx}")
 
         dict_query_info = {
             "state_code" : state_code,
@@ -141,8 +155,10 @@ def create_zip_for_territory(hx:str, zip_path:str, xml_file:dict, database:Datab
 
     zip_buffer = BytesIO()
 
+
     with ZipFile(zip_buffer, 'w', ZIP_DEFLATED) as zip_file:
-        zip_file.writestr(f"{xml_file['territory_id']}-{xml_file['year']}.xml", xml_file['xml'])
+        territory_slug = get_territory_slug(xml_file['territory_name'], xml_file['state_code'])
+        zip_file.writestr(f"{territory_slug}_{xml_file['territory_id']}_{xml_file['year']}.xml", xml_file['xml'])
     
     zip_size = round(zip_buffer.tell() / (1024 * 1024), 2)
     zip_buffer.seek(0)
@@ -188,7 +204,6 @@ def xml_content_generate(state:str, year:str, territory:dict, list_gazzetes_cont
 
     logger.info(f"Gerando XML para cidade {territory['name']}-{state} no ano {year}")
     
-
     meta_info_tag = ET.SubElement(root, "meta")
     ET.SubElement(meta_info_tag, "uf").text = state
     ET.SubElement(meta_info_tag, "ano_publicacao").text = str(year)
@@ -203,13 +218,13 @@ def xml_content_generate(state:str, year:str, territory:dict, list_gazzetes_cont
         try:
             storage.get_file(path_arq_bucket, file_gazette_txt)
         except ClientError as e:
-            logger.error(f"Erro na obtenção do conteúdo de texto do diário do territorio {gazette['territory_id']}: {e}")
+            logger.warning(f"Erro na obtenção do conteúdo de texto do diário do territorio {path_arq_bucket}: {e}")
             file_gazette_txt.close()
 
             continue
 
         gazette_tag = ET.SubElement(all_gazettes_tag, "diario")
-        meta_gazette = ET.SubElement(gazette_tag, "meta-diario")
+        meta_gazette = ET.SubElement(gazette_tag, "meta_diario")
         ET.SubElement(meta_gazette, "url_arquivo_original").text = gazette['file_url']
         ET.SubElement(meta_gazette, "poder").text = gazette['power']
         ET.SubElement(meta_gazette, "edicao_extra").text = 'Sim' if gazette['is_extra_edition'] else 'Não'
@@ -230,8 +245,9 @@ def xml_content_generate(state:str, year:str, territory:dict, list_gazzetes_cont
     data = {
         "xml":xml_file.getvalue(),
         "territory_id":territory['id'],
+        "territory_name":territory['name'],
         "state_code":state,
-        "year":year
+        "year":year,
     }
 
     xml_file.close()

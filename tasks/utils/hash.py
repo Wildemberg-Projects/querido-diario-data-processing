@@ -10,6 +10,4 @@ def hash_content(content: bytes) -> str:
 
     result_hash = hashlib.sha256(content).hexdigest()
 
-    logger.info(f"Hash: {result_hash}")
-
     return result_hash
